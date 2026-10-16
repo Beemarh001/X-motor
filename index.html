@@ -1,0 +1,941 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>X-Motors — Discover Cars</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  body{ font-family:'Inter', sans-serif; background:#0A0C10; }
+  .glass{
+    background:rgba(255,255,255,0.06);
+    backdrop-filter:blur(14px);
+    -webkit-backdrop-filter:blur(14px);
+    border:1px solid rgba(255,255,255,0.08);
+  }
+  .accent-glow{ box-shadow:0 0 24px rgba(47,111,255,0.25); }
+  ::selection{ background:#2F6FFF; color:#0A0C10; }
+
+  #currencySelect{ color:white; }
+  #currencySelect option{ background:#12151b; color:white; }
+
+  .dealer-only{ display:none; }
+  body.dealer-mode .dealer-only{ display:block; }
+  body.dealer-mode .dealer-only-inline{ display:inline-flex; }
+
+  /* "extend background" poster technique: blurred cover copy fills the frame,
+     a sharp contain copy shows the FULL car with nothing cropped off */
+  .poster{ position:absolute; inset:0; overflow:hidden; }
+  .poster-bg{
+    position:absolute; inset:-25px;
+    background-size:cover; background-position:center;
+    filter:blur(28px) brightness(0.42) saturate(1.15);
+    transform:scale(1.15);
+  }
+  .poster-fg{ position:relative; width:100%; height:100%; object-fit:contain; display:block; }
+  .poster-glow{ position:absolute; inset:0; }
+  .poster-fg-svg{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; }
+  /* if the real photo fails to load (e.g. this page is embedded somewhere that
+     blocks external images), fall back to the self-contained vector icon */
+  .poster.img-failed .poster-bg,
+  .poster.img-failed .poster-fg{ display:none; }
+  .poster.img-failed .poster-fg-svg{ display:flex; }
+
+  /* detail page: JS-driven rAF rotation (smooth, pausable, draggable) */
+  #detailRotator{ perspective:1200px; touch-action:pan-y; }
+  #detailSpinInner{ position:relative; width:100%; height:100%; transform-style:preserve-3d; will-change:transform; }
+  #detailSpinInner .spin-face{ position:absolute; inset:0; backface-visibility:hidden; -webkit-backface-visibility:hidden; }
+  #detailSpinInner .spin-face.back{ transform:rotateY(180deg); }
+  #detailSpinInner .spin-face.back .poster-bg,
+  #detailSpinInner .spin-face.back .poster-fg,
+  #detailSpinInner .spin-face.back .poster-fg-svg{ transform:scaleX(-1); }
+  #detailSpinInner .spin-face.back .poster-bg{ transform:scale(1.15) scaleX(-1); }
+</style>
+</head>
+<body class="min-h-screen text-white">
+
+<!-- ============ MAIN SCREEN ============ -->
+<div id="mainScreen">
+
+  <!-- Top nav -->
+  <header class="flex items-center justify-between px-6 md:px-10 pt-6">
+    <div class="flex items-center gap-2">
+      <div class="w-8 h-8 rounded-xl bg-[#FF3B30] flex items-center justify-center font-extrabold text-sm">X</div>
+      <span class="font-bold text-lg tracking-tight">X-Motors</span>
+    </div>
+    <div class="flex items-center gap-3">
+      <select id="currencySelect" class="glass rounded-full text-xs font-semibold px-3 py-2 outline-none cursor-pointer">
+        <option value="USD">$ USD</option>
+        <option value="NGN">₦ NGN</option>
+        <option value="GBP">£ GBP</option>
+        <option value="EUR">€ EUR</option>
+      </select>
+      <button id="dealerToggle" title="Toggle dealer view (shows profit margin)" class="w-10 h-10 rounded-full glass flex items-center justify-center">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/></svg>
+      </button>
+      <button class="w-10 h-10 rounded-full glass flex items-center justify-center">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      </button>
+      <button class="w-10 h-10 rounded-full bg-gradient-to-br from-[#FF3B30] to-[#2F6FFF] flex items-center justify-center">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <p id="dealerBanner" class="hidden px-6 md:px-10 mt-3 text-[11px] font-semibold text-[#2F6FFF] bg-[#2F6FFF]/10 border border-[#2F6FFF]/30 rounded-full mx-6 md:mx-10 py-1.5 px-4 w-fit">
+    Dealer view on — showing cost &amp; profit margin (not visible to customers)
+  </p>
+
+  <!-- Hero Carousel -->
+  <section class="px-6 md:px-10 mt-8">
+    <div class="relative rounded-[20px] overflow-hidden glass accent-glow min-h-[520px] md:min-h-[480px]" id="heroWrap">
+      <div class="absolute inset-0 bg-gradient-to-br from-[#10131a] via-[#0d1017] to-[#08090c]"></div>
+      <div class="absolute -right-10 -top-10 w-72 h-72 bg-[#2F6FFF]/25 rounded-full blur-3xl"></div>
+      <div class="absolute -left-16 bottom-0 w-72 h-72 bg-[#FF3B30]/20 rounded-full blur-3xl"></div>
+
+      <div id="heroSlides" class="relative w-full h-full"></div>
+
+      <div id="heroDots" class="absolute bottom-4 right-6 z-20 flex gap-2"></div>
+    </div>
+  </section>
+
+  <!-- Search -->
+  <section class="px-6 md:px-10 mt-8">
+    <div class="glass rounded-2xl flex items-center gap-3 px-4 py-3">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-white/40 flex-shrink-0"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input id="searchInput" type="text" placeholder="Search by model, make, category..."
+        class="bg-transparent outline-none text-sm flex-1 placeholder-white/35" />
+    </div>
+  </section>
+
+  <!-- Grid -->
+  <section class="px-6 md:px-10 mt-6 pb-16">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="font-bold text-lg">Browse the lot</h2>
+      <span id="resultCount" class="text-white/40 text-xs font-medium"></span>
+    </div>
+    <div id="grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5"></div>
+  </section>
+
+</div>
+
+<!-- ============ DETAIL SCREEN (full page, Netflix-style) ============ -->
+<div id="detailScreen" class="hidden fixed inset-0 bg-[#0A0C10] z-40 overflow-y-auto">
+
+  <button id="detailBack" class="fixed top-5 left-5 z-30 w-10 h-10 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center hover:bg-black/70 transition">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><path d="M15 18l-6-6 6-6"/></svg>
+  </button>
+
+  <!-- Full-width auto-rotating hero, dark blue futuristic backdrop -->
+  <div id="detailRotator" class="relative w-full h-[52vh] min-h-[340px] overflow-hidden cursor-grab active:cursor-grabbing select-none">
+    <div class="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_#132038_0%,_#0A0C10_70%)]"></div>
+    <div class="absolute -top-20 -left-20 w-96 h-96 bg-[#2F6FFF]/25 rounded-full blur-[100px]"></div>
+    <div class="absolute -bottom-24 -right-16 w-96 h-96 bg-[#FF3B30]/15 rounded-full blur-[100px]"></div>
+    <div class="absolute inset-0" style="background:repeating-linear-gradient(0deg, rgba(47,111,255,0.05) 0px, rgba(47,111,255,0.05) 1px, transparent 1px, transparent 40px);"></div>
+
+    <div id="detailSpinInner" class="absolute inset-0">
+      <div class="spin-face front" id="detailFaceFront"></div>
+      <div class="spin-face back" id="detailFaceBack"></div>
+    </div>
+
+    <span class="absolute top-5 right-5 z-10 bg-black/50 backdrop-blur-md text-[10px] font-bold uppercase tracking-wider px-3 py-1.5 rounded-full flex items-center gap-1.5">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#2F6FFF" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
+      360° auto-rotate — tap to pause
+    </span>
+    <div class="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-[#0A0C10] to-transparent pointer-events-none"></div>
+  </div>
+
+  <!-- Details below -->
+  <div class="px-6 md:px-10 -mt-6 relative z-10 pb-16 max-w-3xl">
+    <span id="dCat" class="text-xs font-bold uppercase tracking-widest text-[#FF3B30]"></span>
+    <div class="flex flex-wrap items-end justify-between gap-3 mt-1">
+      <h1 id="dTitle" class="text-3xl md:text-5xl font-extrabold uppercase tracking-tight leading-[1.05]"></h1>
+      <span id="dPrice" class="text-2xl md:text-3xl font-extrabold text-[#2F6FFF] whitespace-nowrap"></span>
+    </div>
+    <p id="dProfit" class="dealer-only text-xs font-bold text-[#FF3B30] mt-1"></p>
+    <div class="flex flex-wrap items-center gap-x-2 gap-y-1 mt-3 text-sm text-white/60 font-medium">
+      <span id="dYear"></span><span class="text-white/30">•</span>
+      <span id="dCat2"></span><span class="text-white/30">•</span>
+      <span class="flex items-center gap-1 text-[#2F6FFF]"><span id="dRating"></span><svg width="12" height="12" viewBox="0 0 24 24" fill="#2F6FFF"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/></svg></span>
+    </div>
+
+    <div class="grid grid-cols-4 gap-3 mt-6 bg-white/5 rounded-2xl p-5 border border-white/10 text-center">
+      <div>
+        <p class="text-[9px] uppercase tracking-wider text-white/40 font-bold">0–60 mph</p>
+        <p id="dAccel" class="text-base font-bold mt-1"></p>
+      </div>
+      <div>
+        <p class="text-[9px] uppercase tracking-wider text-white/40 font-bold">Top Speed</p>
+        <p id="dTop" class="text-base font-bold mt-1"></p>
+      </div>
+      <div>
+        <p class="text-[9px] uppercase tracking-wider text-white/40 font-bold">Power</p>
+        <p id="dHp" class="text-base font-bold mt-1"></p>
+      </div>
+      <div>
+        <p class="text-[9px] uppercase tracking-wider text-white/40 font-bold">Drive</p>
+        <p id="dDrive" class="text-base font-bold mt-1"></p>
+      </div>
+    </div>
+
+    <p id="dDesc" class="text-sm md:text-base text-white/60 leading-relaxed mt-6 max-w-xl"></p>
+
+    <div class="flex flex-wrap gap-3 mt-7">
+      <button id="dBuyNow" class="bg-[#FF3B30] text-white font-bold text-sm px-6 py-3 rounded-full hover:brightness-110 transition">Buy Now</button>
+      <button id="dReserve" class="border border-[#2F6FFF] text-[#2F6FFF] font-bold text-sm px-6 py-3 rounded-full hover:bg-[#2F6FFF]/10 transition">Reserve This Car</button>
+      <button id="dMyList" class="bg-white/10 text-white font-bold text-sm px-6 py-3 rounded-full hover:bg-white/20 transition">+ MY LIST</button>
+      <button id="dReview" class="bg-white/10 text-white font-semibold text-sm px-6 py-3 rounded-full hover:bg-white/20 transition">★ Write a Review</button>
+    </div>
+
+    <!-- Inline PAYMENT form: revealed by "Buy Now" -->
+    <div id="paymentForm" class="hidden mt-6 glass rounded-2xl p-6 max-w-lg">
+      <div class="flex items-center justify-between mb-1">
+        <h3 class="font-bold text-lg">Checkout</h3>
+        <span class="flex items-center gap-1 text-[10px] text-white/40 font-semibold">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2F6FFF" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+          Secure checkout
+        </span>
+      </div>
+      <p class="text-white/50 text-xs mb-5">Enter your card details to place a deposit and lock in this vehicle.</p>
+
+      <!-- Order summary -->
+      <div class="bg-white/5 border border-white/10 rounded-xl p-4 mb-5">
+        <div class="flex justify-between text-sm">
+          <span class="text-white/60" id="paySummaryName">—</span>
+          <span class="font-semibold" id="paySummaryPrice">—</span>
+        </div>
+        <div class="flex justify-between text-xs text-white/40 mt-2">
+          <span>Estimated tax (7%)</span>
+          <span id="paySummaryTax">—</span>
+        </div>
+        <div class="flex justify-between text-sm font-bold mt-3 pt-3 border-t border-white/10">
+          <span>Total due today</span>
+          <span id="paySummaryTotal" class="text-[#2F6FFF]">—</span>
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-3">
+        <input id="payName" type="text" placeholder="Name on card" class="bg-white/5 border border-white/15 rounded-xl px-4 py-3 text-sm outline-none focus:border-[#2F6FFF] placeholder-white/35" />
+
+        <div class="relative">
+          <input id="payCard" type="text" inputmode="numeric" maxlength="19" placeholder="Card number" class="w-full bg-white/5 border border-white/15 rounded-xl pl-4 pr-11 py-3 text-sm outline-none focus:border-[#2F6FFF] placeholder-white/35 tracking-wider" />
+          <svg class="absolute right-3.5 top-1/2 -translate-y-1/2" width="20" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-opacity="0.35" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <input id="payExpiry" type="text" maxlength="5" placeholder="MM/YY" class="bg-white/5 border border-white/15 rounded-xl px-4 py-3 text-sm outline-none focus:border-[#2F6FFF] placeholder-white/35" />
+          <input id="payCvv" type="text" inputmode="numeric" maxlength="4" placeholder="CVV" class="bg-white/5 border border-white/15 rounded-xl px-4 py-3 text-sm outline-none focus:border-[#2F6FFF] placeholder-white/35" />
+        </div>
+
+        <input id="payZip" type="text" placeholder="Billing ZIP / postal code" class="bg-white/5 border border-white/15 rounded-xl px-4 py-3 text-sm outline-none focus:border-[#2F6FFF] placeholder-white/35" />
+
+        <p id="payError" class="hidden text-[#FF3B30] text-xs"></p>
+
+        <div class="flex gap-3 mt-1">
+          <button id="paySubmit" class="flex-1 bg-[#FF3B30] text-white font-bold text-sm py-3 rounded-full hover:brightness-110 transition">Pay Now</button>
+          <button id="payCancel" class="px-5 bg-white/10 text-white font-semibold text-sm py-3 rounded-full hover:bg-white/20 transition">Cancel</button>
+        </div>
+        <p class="text-[10px] text-white/30 text-center mt-1">This is a demo checkout — no real card data is submitted or stored.</p>
+      </div>
+    </div>
+
+    <!-- Payment success / receipt -->
+    <div id="paymentConfirm" class="hidden mt-6 glass rounded-2xl p-6 max-w-lg border border-[#2F6FFF]/40">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-11 h-11 rounded-full bg-[#2F6FFF]/20 flex items-center justify-center flex-shrink-0">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2F6FFF" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>
+        </div>
+        <div class="flex-1">
+          <div class="flex items-center gap-2">
+            <p class="font-bold text-base">Payment successful</p>
+            <span id="rcptStatus" class="text-[9px] font-bold uppercase tracking-wider bg-[#2F6FFF]/20 text-[#2F6FFF] px-2 py-0.5 rounded-full">Paid</span>
+          </div>
+          <p class="text-white/45 text-xs mt-0.5">A confirmation and receipt have been sent to your inbox.</p>
+        </div>
+      </div>
+      <div class="bg-white/5 border border-white/10 rounded-xl p-4 text-sm">
+        <div class="flex justify-between py-1"><span class="text-white/50">Order ID</span><span id="rcptId" class="font-mono"></span></div>
+        <div class="flex justify-between py-1"><span class="text-white/50">Vehicle</span><span id="rcptCar"></span></div>
+        <div class="flex justify-between py-1"><span class="text-white/50">Card</span><span id="rcptCard"></span></div>
+        <div class="flex justify-between py-1 pt-2 mt-1 border-t border-white/10 font-bold"><span>Amount charged</span><span id="rcptTotal" class="text-[#2F6FFF]"></span></div>
+      </div>
+      <div class="flex flex-col gap-2 mt-4 text-xs text-white/50">
+        <div class="flex items-center gap-2"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#2F6FFF" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>Order status updated: pending → paid</div>
+        <div class="flex items-center gap-2"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#2F6FFF" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>Confirmation email queued to buyer</div>
+        <div class="flex items-center gap-2"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#2F6FFF" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>Fulfillment notified — vehicle reserved for delivery/pickup</div>
+      </div>
+    </div>
+
+    <!-- Inline inquiry form: revealed by "Reserve This Car" -->
+    <div id="inquiryForm" class="hidden mt-6 glass rounded-2xl p-6 max-w-md">
+      <h3 class="font-bold text-lg mb-1">Reserve this car</h3>
+      <p class="text-white/50 text-xs mb-4">Leave your details and a dealer will reach out to confirm availability and next steps.</p>
+      <div class="flex flex-col gap-3">
+        <input id="inqName" type="text" placeholder="Full name" class="bg-white/5 border border-white/15 rounded-xl px-4 py-3 text-sm outline-none focus:border-[#2F6FFF] placeholder-white/35" />
+        <input id="inqEmail" type="email" placeholder="Email address" class="bg-white/5 border border-white/15 rounded-xl px-4 py-3 text-sm outline-none focus:border-[#2F6FFF] placeholder-white/35" />
+        <input id="inqPhone" type="tel" placeholder="Phone number" class="bg-white/5 border border-white/15 rounded-xl px-4 py-3 text-sm outline-none focus:border-[#2F6FFF] placeholder-white/35" />
+        <p id="inqError" class="hidden text-[#FF3B30] text-xs"></p>
+        <div class="flex gap-3 mt-1">
+          <button id="inqSubmit" class="flex-1 bg-[#2F6FFF] text-white font-bold text-sm py-3 rounded-full hover:brightness-110 transition">Send Inquiry</button>
+          <button id="inqCancel" class="px-5 bg-white/10 text-white font-semibold text-sm py-3 rounded-full hover:bg-white/20 transition">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirmation state after submit -->
+    <div id="inquiryConfirm" class="hidden mt-6 glass rounded-2xl p-6 max-w-md border border-[#2F6FFF]/40">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-full bg-[#2F6FFF]/20 flex items-center justify-center flex-shrink-0">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2F6FFF" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>
+        </div>
+        <div>
+          <p class="font-bold text-sm">Inquiry sent</p>
+          <p id="inqConfirmText" class="text-white/50 text-xs mt-0.5"></p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ================= CURRENCY =================
+// Static demo exchange rates (relative to USD). In production, replace with
+// a live FX API — the formatting layer below doesn't need to change.
+const EXCHANGE_RATES = { USD: 1, NGN: 1550, GBP: 0.79, EUR: 0.92 };
+const CURRENCY_LOCALES = { USD: "en-US", NGN: "en-NG", GBP: "en-GB", EUR: "en-IE" };
+
+function detectCurrency(){
+  const lang = (navigator.language || "en-US").toUpperCase();
+  if(lang.includes("NG")) return "NGN";
+  if(lang.includes("GB")) return "GBP";
+  if(/^(DE|FR|ES|IT|NL|PT|IE)/.test(lang)) return "EUR";
+  return "USD";
+}
+
+let currentCurrency = detectCurrency();
+
+// amountUSD is always the canonical stored value; convert + format at display time
+function formatCurrency(amountUSD, currencyCode = currentCurrency){
+  const converted = amountUSD * (EXCHANGE_RATES[currencyCode] || 1);
+  return new Intl.NumberFormat(CURRENCY_LOCALES[currencyCode] || "en-US", {
+    style: "currency",
+    currency: currencyCode,
+    maximumFractionDigits: currencyCode === "NGN" ? 0 : 2,
+  }).format(converted);
+}
+
+// ================= PROFIT (dealer-facing only) =================
+function calculateProfit(car){
+  const profit = car.specs.price - car.specs.cost;
+  const marginPct = (profit / car.specs.price) * 100;
+  return { profit, marginPct };
+}
+
+let dealerMode = false;
+
+const CARS = [
+  {make:"Tesla", model:"Model 3", cat:"Electric Sedan", year:2023, rating:4.8, desc:"Instant torque and a minimalist cockpit built around a single center display.",
+    imgs:["https://commons.wikimedia.org/wiki/Special:FilePath/Tesla_Model_3_Front_View.jpg?width=700",
+          "https://commons.wikimedia.org/wiki/Special:FilePath/2019_Tesla_Model_3_Performance_AWD_Rear.jpg?width=700"],
+    specs:{accel:"4.2s", top:"145 mph", topKmh:"233 km/h", hp:"440 hp", drive:"AWD", price:42990, cost:36950}},
+  {make:"Ford", model:"Mustang GT", cat:"Muscle Coupe", year:2022, rating:4.7, desc:"Naturally aspirated V8 growl with a manual gearbox option for purists.",
+    imgs:["https://commons.wikimedia.org/wiki/Special:FilePath/Ford-mustang-gt-2010.jpg?width=700",
+          "https://commons.wikimedia.org/wiki/Special:FilePath/2018_Ford_Mustang_GT_5.0_Rear_(1).jpg?width=700"],
+    specs:{accel:"4.3s", top:"155 mph", topKmh:"250 km/h", hp:"480 hp", drive:"RWD", price:45800, cost:37550}},
+  {make:"Toyota", model:"RAV4", cat:"Hybrid SUV", year:2023, rating:4.6, desc:"Efficient, spacious, and dependable — the default pick for daily versatility.",
+    imgs:["https://commons.wikimedia.org/wiki/Special:FilePath/2022_MY_Toyota_RAV4_Hybrid_facelift_XA50.jpg?width=700",
+          "https://commons.wikimedia.org/wiki/Special:FilePath/2019_Toyota_RAV4_XLE_AWD_rear_3.22.19.jpg?width=700"],
+    specs:{accel:"7.4s", top:"124 mph", topKmh:"200 km/h", hp:"219 hp", drive:"AWD", price:34500, cost:30350}},
+  {make:"BMW", model:"M3 Competition", cat:"Performance Sedan", year:2022, rating:4.9, desc:"Track-tuned chassis with everyday usability and a razor-sharp steering feel.",
+    imgs:["https://commons.wikimedia.org/wiki/Special:FilePath/BMW_M3_Competition_%28G80%29_IMG_4041.jpg?width=700",
+          "https://commons.wikimedia.org/wiki/Special:FilePath/2021_BMW_M3_Competition_Automatic_3.0_Rear.jpg?width=700"],
+    specs:{accel:"3.8s", top:"180 mph", topKmh:"290 km/h", hp:"503 hp", drive:"AWD", price:76200, cost:60950}},
+  {make:"Jeep", model:"Wrangler Rubicon", cat:"Off-Road SUV", year:2021, rating:4.5, desc:"Removable doors and locking diffs built for terrain most SUVs can't touch.",
+    imgs:["https://commons.wikimedia.org/wiki/Special:FilePath/Jeep_Wrangler_Rubicon_392_IMG_7694.jpg?width=700",
+          "https://commons.wikimedia.org/wiki/Special:FilePath/Jeep_Wrangler_Rubicon_%28JL%29_4xe_1X7A0285.jpg?width=700"],
+    specs:{accel:"4.5s", top:"99 mph", topKmh:"159 km/h", hp:"470 hp", drive:"4WD", price:52900, cost:43900}},
+  {make:"Honda", model:"Civic Type R", cat:"Hot Hatch", year:2023, rating:4.8, desc:"Front-wheel-drive lap-record pace wrapped in a genuinely usable hatchback.",
+    imgs:["https://commons.wikimedia.org/wiki/Special:FilePath/2022_Honda_Civic_Type_R.jpg?width=700",
+          "https://commons.wikimedia.org/wiki/Special:FilePath/Honda_CIVIC_TYPE_R_%286BA-FL5%29_rear.jpg?width=700"],
+    specs:{accel:"5.0s", top:"170 mph", topKmh:"274 km/h", hp:"315 hp", drive:"FWD", price:44890, cost:38150}},
+  {make:"Chevrolet", model:"Corvette Stingray", cat:"Sports Coupe", year:2022, rating:4.9, desc:"Mid-engine layout brings supercar dynamics at a fraction of the price.",
+    imgs:["https://commons.wikimedia.org/wiki/Special:FilePath/Chevrolet_Corvette_C8_Stingray_blue.jpg?width=700",
+          "https://commons.wikimedia.org/wiki/Special:FilePath/Chevrolet_Corvette_%28C8%29_rear_view.jpg?width=700"],
+    specs:{accel:"2.9s", top:"194 mph", topKmh:"312 km/h", hp:"495 hp", drive:"RWD", price:68300, cost:53950}},
+  {make:"Subaru", model:"Outback Wilderness", cat:"Adventure Wagon", year:2023, rating:4.6, desc:"Raised clearance and standard AWD for gravel roads and long-haul comfort.",
+    imgs:["https://commons.wikimedia.org/wiki/Special:FilePath/2023_Subaru_Outback_Wilderness_in_Autumn_Green_Metallic%2C_Front_Left%2C_04-29-2023.jpg?width=700",
+          "https://commons.wikimedia.org/wiki/Special:FilePath/2022_Subaru_Outback_Wilderness%2C_rear_4.30.22.jpg?width=700"],
+    specs:{accel:"8.5s", top:"130 mph", topKmh:"209 km/h", hp:"260 hp", drive:"AWD", price:39400, cost:34300}},
+  {make:"Audi", model:"RS6 Avant", cat:"Performance Wagon", year:2022, rating:4.8, desc:"A 591-horsepower family wagon that trades practicality for none of its speed.",
+    imgs:["https://commons.wikimedia.org/wiki/Special:FilePath/2021_Audi_RS6_Avant_in_Nardo_Gray%2C_front_right.jpg?width=700",
+          "https://commons.wikimedia.org/wiki/Special:FilePath/2021_Audi_RS6_Avant_in_Nardo_Gray%2C_rear_right.jpg?width=700"],
+    specs:{accel:"3.5s", top:"155 mph", topKmh:"250 km/h", hp:"591 hp", drive:"AWD", price:84500, cost:68450}},
+  {make:"Mercedes-AMG", model:"GT", cat:"Grand Tourer", year:2023, rating:4.7, desc:"Front mid-engine balance under one of the longest hoods still on sale today.",
+    imgs:["https://commons.wikimedia.org/wiki/Special:FilePath/Mercedes-AMG_GT_63_IMG_2690.jpg?width=700",
+          "https://commons.wikimedia.org/wiki/Special:FilePath/Mercedes-AMG_GT_63_S_4MATIC%2B_%28X290%29_rear.jpg?width=700"],
+    specs:{accel:"3.1s", top:"195 mph", topKmh:"314 km/h", hp:"630 hp", drive:"AWD", price:138900, cost:108350}},
+  {make:"Nissan", model:"GT-R", cat:"Sports Coupe", year:2022, rating:4.8, desc:"Twin-turbo all-wheel launch control built to hunt cars twice its price.",
+    imgs:["https://commons.wikimedia.org/wiki/Special:FilePath/Nissan_GT-R_Nismo_%28R35%29%2C_2022%2C_front.jpg?width=700",
+          "https://commons.wikimedia.org/wiki/Special:FilePath/Nissan_GT-R_04.JPG?width=700"],
+    specs:{accel:"2.9s", top:"205 mph", topKmh:"330 km/h", hp:"600 hp", drive:"AWD", price:118700, cost:94950}},
+  {make:"Land Rover", model:"Defender", cat:"Off-Road SUV", year:2023, rating:4.6, desc:"Boxy, capable, and unbothered by terrain that stops most luxury SUVs cold.",
+    imgs:["https://commons.wikimedia.org/wiki/Special:FilePath/2020_Land_Rover_Defender.jpg?width=700",
+          "https://commons.wikimedia.org/wiki/Special:FilePath/2020_Land_Rover_Defender_SE_Diesel_Automatic_2.0.jpg?width=700"],
+    specs:{accel:"6.0s", top:"119 mph", topKmh:"191 km/h", hp:"395 hp", drive:"4WD", price:58300, cost:48950}},
+];
+
+const HERO_SLIDES = [
+  {
+    img:"https://commons.wikimedia.org/wiki/Special:FilePath/Porsche_911_%28992%29_Carrera_GTS.jpg?width=800",
+    title:"Porsche 911<br/>Carrera GTS", year:2023, cat:"Sports Coupe", rating:4.9,
+    desc:"Flat-six twin-turbo performance with a driver-focused cockpit — the benchmark daily-drivable sports car in this class."
+  },
+  {
+    img:"https://commons.wikimedia.org/wiki/Special:FilePath/Chevrolet_Corvette_C8_Stingray_blue.jpg?width=800",
+    title:"Corvette<br/>Stingray", year:2022, cat:"Mid-Engine Coupe", rating:4.9,
+    desc:"Mid-engine layout brings supercar dynamics and an exotic-level silhouette at a fraction of the price."
+  },
+  {
+    img:"https://commons.wikimedia.org/wiki/Special:FilePath/BMW_M3_Competition_%28G80%29_IMG_4041.jpg?width=800",
+    title:"BMW M3<br/>Competition", year:2022, cat:"Performance Sedan", rating:4.8,
+    desc:"Track-tuned chassis with everyday usability and a razor-sharp steering feel most rivals can't match."
+  },
+  {
+    img:"https://commons.wikimedia.org/wiki/Special:FilePath/Nissan_GT-R_Nismo_%28R35%29%2C_2022%2C_front.jpg?width=800",
+    title:"Nissan<br/>GT-R", year:2022, cat:"Sports Coupe", rating:4.8,
+    desc:"Twin-turbo all-wheel-drive launch control engineered to hunt down supercars on any surface."
+  },
+  {
+    img:"https://commons.wikimedia.org/wiki/Special:FilePath/Mercedes-AMG_GT_63_IMG_2690.jpg?width=800",
+    title:"Mercedes-AMG<br/>GT", year:2023, cat:"Grand Tourer", rating:4.7,
+    desc:"Front mid-engine balance wrapped in one of the longest, most dramatic hoods still on sale today."
+  },
+];
+
+function heroSlideHTML(s, idx){
+  const active = idx === 0;
+  return `
+  <div class="hero-slide absolute inset-0 flex flex-col transition-all duration-700 ease-out
+              ${active ? 'opacity-100 translate-x-0 z-10' : 'opacity-0 translate-x-6 z-0 pointer-events-none'}" data-idx="${idx}">
+    <div class="relative w-full h-48 md:h-64 flex-shrink-0 overflow-hidden">
+      <span class="absolute top-3 left-3 z-10 bg-[#FF3B30] text-white text-[10px] font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-full">Featured</span>
+      ${posterHTML(s.img, s.cat, s.title.replace(/<br\/>/g,' '))}
+      <div class="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-[#0d1017] to-transparent pointer-events-none"></div>
+    </div>
+    <div class="flex-1 min-w-0 p-6 md:p-8">
+      <h1 class="text-3xl md:text-5xl font-extrabold uppercase tracking-tight leading-[1.05]">${s.title}</h1>
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-1 mt-3 text-sm text-white/60 font-medium">
+        <span>${s.year}</span><span class="text-white/30">•</span>
+        <span>${s.cat}</span><span class="text-white/30">•</span>
+        <span class="flex items-center gap-1 text-[#2F6FFF]">${s.rating} <svg width="12" height="12" viewBox="0 0 24 24" fill="#2F6FFF"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/></svg></span>
+      </div>
+      <p class="text-white/50 text-sm mt-3 max-w-md leading-relaxed">${s.desc}</p>
+      <div class="flex gap-3 mt-5">
+        <button class="bg-[#2F6FFF] text-white font-bold text-sm px-5 py-2.5 rounded-full hover:brightness-110 transition">+ MY LIST</button>
+        <button class="glass font-semibold text-sm px-5 py-2.5 rounded-full hover:bg-white/10 transition">EXPLORE NOW</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+let heroIndex = 0;
+let heroTimer = null;
+
+function renderHero(){
+  document.getElementById("heroSlides").innerHTML = HERO_SLIDES.map(heroSlideHTML).join("");
+  document.getElementById("heroDots").innerHTML = HERO_SLIDES.map((s,i)=>
+    `<button class="hero-dot w-2 h-2 rounded-full transition-colors ${i===0 ? 'bg-[#2F6FFF]' : 'bg-white/25'}" data-idx="${i}"></button>`
+  ).join("");
+  document.querySelectorAll(".hero-dot").forEach(dot=>{
+    dot.addEventListener("click", ()=>{
+      showHero(Number(dot.dataset.idx));
+      restartHeroTimer();
+    });
+  });
+}
+
+function showHero(idx){
+  document.querySelectorAll(".hero-slide").forEach(el=>{
+    const isActive = Number(el.dataset.idx) === idx;
+    el.classList.toggle("opacity-100", isActive);
+    el.classList.toggle("translate-x-0", isActive);
+    el.classList.toggle("z-10", isActive);
+    el.classList.toggle("opacity-0", !isActive);
+    el.classList.toggle("translate-x-6", !isActive);
+    el.classList.toggle("z-0", !isActive);
+    el.classList.toggle("pointer-events-none", !isActive);
+  });
+  document.querySelectorAll(".hero-dot").forEach(dot=>{
+    const isActive = Number(dot.dataset.idx) === idx;
+    dot.classList.toggle("bg-[#2F6FFF]", isActive);
+    dot.classList.toggle("bg-white/25", !isActive);
+  });
+  heroIndex = idx;
+}
+
+function restartHeroTimer(){
+  if(heroTimer) clearInterval(heroTimer);
+  heroTimer = setInterval(()=>{
+    showHero((heroIndex + 1) % HERO_SLIDES.length);
+  }, 5000);
+}
+
+function accentFor(cat){
+  if(/Muscle|Sports|Hot Hatch|Coupe/i.test(cat)) return "#FF3B30";
+  if(/SUV|Wagon|Off-Road|Adventure/i.test(cat)) return "#FFFFFF";
+  return "#2F6FFF";
+}
+
+function carIconSVG(accent){
+  return `<svg viewBox="0 0 300 160" class="w-4/5 h-4/5" xmlns="http://www.w3.org/2000/svg">
+    <ellipse cx="150" cy="138" rx="118" ry="8" fill="black" opacity="0.35"/>
+    <path d="M30 105 L45 65 Q55 48 78 48 L115 48 L140 22 L205 22 L228 48 L252 48 Q272 48 280 72 L288 105 Z"
+      fill="#1a1d24" stroke="${accent}" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="M118 48 L128 26 L200 26 L215 48 Z" fill="#0d1017" stroke="${accent}" stroke-width="1.5" stroke-linejoin="round"/>
+    <line x1="163" y1="26" x2="163" y2="48" stroke="${accent}" stroke-width="1.2" opacity="0.6"/>
+    <circle cx="88" cy="110" r="22" fill="#14161b" stroke="white" stroke-opacity="0.5" stroke-width="2.5"/>
+    <circle cx="88" cy="110" r="8" fill="${accent}"/>
+    <circle cx="240" cy="110" r="22" fill="#14161b" stroke="white" stroke-opacity="0.5" stroke-width="2.5"/>
+    <circle cx="240" cy="110" r="8" fill="${accent}"/>
+    <rect x="34" y="70" width="12" height="7" rx="2" fill="${accent}"/>
+    <rect x="274" y="70" width="12" height="7" rx="2" fill="white" opacity="0.85"/>
+  </svg>`;
+}
+
+function posterHTML(img, cat, alt){
+  const accent = accentFor(cat);
+  return `<div class="poster">
+    <div class="poster-glow" style="background:radial-gradient(circle at 50% 45%, ${accent}22 0%, transparent 70%)"></div>
+    <div class="poster-bg" style="background-image:url('${img}')"></div>
+    <img class="poster-fg" src="${img}" alt="${alt}" loading="lazy"
+         onerror="this.closest('.poster').classList.add('img-failed')" />
+    <div class="poster-fg-svg">${carIconSVG(accent)}</div>
+  </div>`;
+}
+
+function cardHTML(c, idx){
+  return `
+  <div class="car-card relative cursor-pointer" data-idx="${idx}">
+    <div class="glass rounded-2xl overflow-hidden flex flex-col hover:-translate-y-1 transition-transform duration-150">
+      <div class="relative h-36 bg-[#141414]">
+        <span class="absolute top-2.5 right-2.5 z-20 bg-black/60 backdrop-blur-sm text-xs font-bold px-2 py-1 rounded-full flex items-center gap-1">
+          ${c.rating} <svg width="10" height="10" viewBox="0 0 24 24" fill="#2F6FFF"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/></svg>
+        </span>
+        ${posterHTML(c.imgs[0], c.cat, c.make+' '+c.model)}
+      </div>
+      <div class="p-4 flex flex-col flex-1">
+        <div class="flex items-start justify-between gap-2">
+          <h3 class="font-bold text-[15px] leading-tight">${c.make} ${c.model}</h3>
+          <span class="text-[13px] font-extrabold text-[#2F6FFF] whitespace-nowrap">${formatCurrency(c.specs.price)}</span>
+        </div>
+        <div class="flex items-center gap-1.5 text-[11px] text-white/50 font-medium mt-1.5">
+          <span>${c.year}</span><span class="text-white/25">•</span><span>${c.cat}</span>
+        </div>
+        <p class="dealer-only text-[10px] font-bold text-[#FF3B30] mt-1">
+          Margin: ${formatCurrency(calculateProfit(c).profit)} (${calculateProfit(c).marginPct.toFixed(1)}%)
+        </p>
+        <p class="text-white/45 text-xs mt-2 leading-relaxed line-clamp-2">${c.desc}</p>
+        <button class="view-btn mt-3 w-full bg-white/10 hover:bg-[#FF3B30] text-white font-semibold text-xs py-2.5 rounded-full transition-colors">TAP TO VIEW</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+const grid = document.getElementById("grid");
+const resultCount = document.getElementById("resultCount");
+
+function render(list){
+  if(list.length === 0){
+    const query = document.getElementById("searchInput").value.trim();
+    grid.innerHTML = `
+      <div class="col-span-full flex flex-col items-center justify-center text-center py-16 px-6">
+        <div class="w-14 h-14 rounded-full bg-white/5 border border-white/10 flex items-center justify-center mb-4">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-white/40"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </div>
+        <p class="font-bold text-base">No cars found</p>
+        <p class="text-white/45 text-sm mt-1 max-w-xs">Try a different make, model, or category — like "Porsche" or "SUV".</p>
+        <div class="flex gap-2 mt-4">
+          <button id="clearSearchBtn" class="bg-white/10 hover:bg-white/20 text-white text-xs font-semibold px-4 py-2 rounded-full transition-colors">Clear search</button>
+          <button id="requestSourceBtn" class="bg-[#FF3B30] hover:brightness-110 text-white text-xs font-semibold px-4 py-2 rounded-full transition-colors">Request this car</button>
+        </div>
+
+        <div id="sourcingForm" class="hidden mt-6 glass rounded-2xl p-6 max-w-md w-full text-left">
+          <h3 class="font-bold text-base mb-1">Request custom sourcing</h3>
+          <p class="text-white/50 text-xs mb-4">Not in our current lot — tell us what you're after and a dealer will follow up with sourcing options and pricing. This isn't a purchase or a deposit.</p>
+          <div class="flex flex-col gap-3">
+            <input id="srcCar" type="text" placeholder="Car you're looking for" value="${query.replace(/"/g,'&quot;')}" class="bg-white/5 border border-white/15 rounded-xl px-4 py-3 text-sm outline-none focus:border-[#2F6FFF] placeholder-white/35" />
+            <input id="srcName" type="text" placeholder="Full name" class="bg-white/5 border border-white/15 rounded-xl px-4 py-3 text-sm outline-none focus:border-[#2F6FFF] placeholder-white/35" />
+            <input id="srcEmail" type="email" placeholder="Email address" class="bg-white/5 border border-white/15 rounded-xl px-4 py-3 text-sm outline-none focus:border-[#2F6FFF] placeholder-white/35" />
+            <input id="srcPhone" type="tel" placeholder="Phone number" class="bg-white/5 border border-white/15 rounded-xl px-4 py-3 text-sm outline-none focus:border-[#2F6FFF] placeholder-white/35" />
+            <p id="srcError" class="hidden text-[#FF3B30] text-xs"></p>
+            <div class="flex gap-3 mt-1">
+              <button id="srcSubmit" class="flex-1 bg-[#2F6FFF] text-white font-bold text-sm py-3 rounded-full hover:brightness-110 transition">Send Request</button>
+              <button id="srcCancel" class="px-5 bg-white/10 text-white font-semibold text-sm py-3 rounded-full hover:bg-white/20 transition">Cancel</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="sourcingConfirm" class="hidden mt-6 glass rounded-2xl p-5 max-w-md w-full text-left border border-[#2F6FFF]/40">
+          <div class="flex items-center gap-3">
+            <div class="w-9 h-9 rounded-full bg-[#2F6FFF]/20 flex items-center justify-center flex-shrink-0">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2F6FFF" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>
+            </div>
+            <div>
+              <p class="font-bold text-sm">Request sent</p>
+              <p id="sourcingConfirmText" class="text-white/50 text-xs mt-0.5"></p>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    resultCount.textContent = "0 results";
+
+    document.getElementById("clearSearchBtn").addEventListener("click", ()=>{
+      document.getElementById("searchInput").value = "";
+      render(CARS);
+    });
+    document.getElementById("requestSourceBtn").addEventListener("click", ()=>{
+      document.getElementById("sourcingForm").classList.remove("hidden");
+      document.getElementById("sourcingConfirm").classList.add("hidden");
+    });
+    document.getElementById("srcCancel").addEventListener("click", ()=>{
+      document.getElementById("sourcingForm").classList.add("hidden");
+    });
+    document.getElementById("srcSubmit").addEventListener("click", ()=>{
+      const carWanted = document.getElementById("srcCar").value.trim();
+      const name = document.getElementById("srcName").value.trim();
+      const email = document.getElementById("srcEmail").value.trim();
+      const phone = document.getElementById("srcPhone").value.trim();
+      const errorEl = document.getElementById("srcError");
+
+      const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+      const phoneValid = phone.replace(/\D/g, "").length >= 7;
+
+      if(!carWanted || !name || !emailValid || !phoneValid){
+        errorEl.textContent = !carWanted ? "Please tell us which car you're after." :
+          !name ? "Please enter your name." :
+          !emailValid ? "Please enter a valid email address." :
+          "Please enter a valid phone number.";
+        errorEl.classList.remove("hidden");
+        return;
+      }
+      errorEl.classList.add("hidden");
+      document.getElementById("sourcingForm").classList.add("hidden");
+      document.getElementById("sourcingConfirmText").textContent =
+        `We'll research sourcing and pricing for the ${carWanted} and reach out at ${email} or ${phone}. No payment is required at this stage.`;
+      document.getElementById("sourcingConfirm").classList.remove("hidden");
+    });
+    return;
+  }
+
+  grid.innerHTML = list.map((c, i) => cardHTML(c, CARS.indexOf(c))).join("");
+  resultCount.textContent = `${list.length} results`;
+
+  grid.querySelectorAll(".car-card").forEach(card=>{
+    const idx = Number(card.dataset.idx);
+    card.querySelector(".view-btn").addEventListener("click", (e)=>{
+      e.stopPropagation();
+      openDetail(CARS[idx]);
+    });
+    card.addEventListener("click", ()=> openDetail(CARS[idx]));
+  });
+}
+
+// ================= FULL-PAGE DETAIL SCREEN =================
+const mainScreen = document.getElementById("mainScreen");
+const detailScreen = document.getElementById("detailScreen");
+const detailRotator = document.getElementById("detailRotator");
+const detailSpinInner = document.getElementById("detailSpinInner");
+
+// --- rAF-driven continuous rotation: 1 full 360 every 8 seconds ---
+let rotationDeg = 0;
+let autoPlaying = true;
+let isDragging = false;
+let dragStartX = 0;
+let dragStartRotation = 0;
+let rafId = null;
+const DEG_PER_MS = 360 / 8000; // 1 full rotation every 8s, frame-rate independent
+let lastFrameTime = null;
+
+function animateDetail(now){
+  if(!lastFrameTime) lastFrameTime = now;
+  const dt = now - lastFrameTime;
+  lastFrameTime = now;
+
+  if(autoPlaying && !isDragging){
+    rotationDeg = (rotationDeg + DEG_PER_MS * dt) % 360;
+  }
+  detailSpinInner.style.transform = `rotateY(${rotationDeg}deg)`;
+  rafId = requestAnimationFrame(animateDetail);
+}
+
+function startDetailAnimation(){
+  lastFrameTime = null;
+  if(rafId) cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(animateDetail);
+}
+function stopDetailAnimation(){
+  if(rafId) cancelAnimationFrame(rafId);
+  rafId = null;
+}
+
+// tap to pause / resume
+detailRotator.addEventListener("click", ()=>{
+  if(!isDragging) autoPlaying = !autoPlaying;
+});
+
+// drag to manually spin
+detailRotator.addEventListener("pointerdown", (e)=>{
+  isDragging = true;
+  dragStartX = e.clientX;
+  dragStartRotation = rotationDeg;
+  detailRotator.setPointerCapture(e.pointerId);
+});
+detailRotator.addEventListener("pointermove", (e)=>{
+  if(!isDragging) return;
+  const delta = (e.clientX - dragStartX) * 0.5;
+  rotationDeg = (dragStartRotation + delta) % 360;
+  if(rotationDeg < 0) rotationDeg += 360;
+});
+window.addEventListener("pointerup", ()=>{
+  if(isDragging){
+    isDragging = false;
+    autoPlaying = true; // resume auto-rotation after the user lets go
+  }
+});
+
+function openDetail(car){
+  const accent = accentFor(car.cat);
+  document.getElementById("detailFaceFront").innerHTML = posterHTML(car.imgs[0], car.cat, `${car.make} ${car.model}`);
+  document.getElementById("detailFaceBack").innerHTML = posterHTML(car.imgs[1], car.cat, `${car.make} ${car.model}`);
+
+  document.getElementById("dCat").textContent = car.cat;
+  document.getElementById("dTitle").textContent = `${car.make} ${car.model}`;
+  document.getElementById("dPrice").textContent = formatCurrency(car.specs.price);
+  const dealerProfit = calculateProfit(car);
+  document.getElementById("dProfit").textContent =
+    `Margin: ${formatCurrency(dealerProfit.profit)} (${dealerProfit.marginPct.toFixed(1)}%) — cost ${formatCurrency(car.specs.cost)}`;
+  document.getElementById("dYear").textContent = car.year;
+  document.getElementById("dCat2").textContent = car.cat;
+  document.getElementById("dRating").textContent = car.rating;
+  document.getElementById("dAccel").textContent = car.specs.accel;
+  document.getElementById("dTop").textContent = car.specs.top + " / " + car.specs.topKmh;
+  document.getElementById("dHp").textContent = car.specs.hp;
+  document.getElementById("dDrive").textContent = car.specs.drive;
+  document.getElementById("dDesc").textContent = car.desc;
+  document.getElementById("dMyList").textContent = "+ MY LIST";
+
+  currentDetailCar = car;
+  document.getElementById("inquiryForm").classList.add("hidden");
+  document.getElementById("inquiryConfirm").classList.add("hidden");
+  document.getElementById("inqError").classList.add("hidden");
+  document.getElementById("inqName").value = "";
+  document.getElementById("inqEmail").value = "";
+  document.getElementById("inqPhone").value = "";
+
+  document.getElementById("paymentForm").classList.add("hidden");
+  document.getElementById("paymentConfirm").classList.add("hidden");
+  document.getElementById("payError").classList.add("hidden");
+  document.getElementById("payName").value = "";
+  document.getElementById("payCard").value = "";
+  document.getElementById("payExpiry").value = "";
+  document.getElementById("payCvv").value = "";
+  document.getElementById("payZip").value = "";
+  refreshPaymentSummary(car);
+
+  rotationDeg = 0;
+  autoPlaying = true;
+  isDragging = false;
+
+  mainScreen.classList.add("hidden");
+  detailScreen.classList.remove("hidden");
+  window.scrollTo(0,0);
+  startDetailAnimation();
+}
+
+function closeDetail(){
+  stopDetailAnimation();
+  detailScreen.classList.add("hidden");
+  mainScreen.classList.remove("hidden");
+}
+
+document.getElementById("detailBack").addEventListener("click", closeDetail);
+document.getElementById("dMyList").addEventListener("click", (e)=>{
+  e.target.textContent = "✓ SAVED";
+});
+
+// ---- Reserve / inquiry form ----
+let currentDetailCar = null;
+
+document.getElementById("dReserve").addEventListener("click", ()=>{
+  document.getElementById("paymentForm").classList.add("hidden");
+  document.getElementById("paymentConfirm").classList.add("hidden");
+  document.getElementById("inquiryConfirm").classList.add("hidden");
+  document.getElementById("inquiryForm").classList.remove("hidden");
+  document.getElementById("inquiryForm").scrollIntoView({behavior:"smooth", block:"center"});
+});
+
+document.getElementById("inqCancel").addEventListener("click", ()=>{
+  document.getElementById("inquiryForm").classList.add("hidden");
+});
+
+document.getElementById("inqSubmit").addEventListener("click", ()=>{
+  const name = document.getElementById("inqName").value.trim();
+  const email = document.getElementById("inqEmail").value.trim();
+  const phone = document.getElementById("inqPhone").value.trim();
+  const errorEl = document.getElementById("inqError");
+
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const phoneValid = phone.replace(/\D/g, "").length >= 7;
+
+  if(!name || !emailValid || !phoneValid){
+    errorEl.textContent = !name ? "Please enter your name." :
+      !emailValid ? "Please enter a valid email address." :
+      "Please enter a valid phone number.";
+    errorEl.classList.remove("hidden");
+    return;
+  }
+  errorEl.classList.add("hidden");
+
+  document.getElementById("inquiryForm").classList.add("hidden");
+  const confirmEl = document.getElementById("inquiryConfirm");
+  document.getElementById("inqConfirmText").textContent =
+    `A dealer will contact you at ${email} or ${phone} about the ${currentDetailCar.make} ${currentDetailCar.model} shortly.`;
+  confirmEl.classList.remove("hidden");
+});
+
+// ---- Buy Now / payment ----
+document.getElementById("dBuyNow").addEventListener("click", ()=>{
+  document.getElementById("inquiryForm").classList.add("hidden");
+  document.getElementById("inquiryConfirm").classList.add("hidden");
+  document.getElementById("paymentConfirm").classList.add("hidden");
+  document.getElementById("paymentForm").classList.remove("hidden");
+  document.getElementById("paymentForm").scrollIntoView({behavior:"smooth", block:"center"});
+});
+
+document.getElementById("payCancel").addEventListener("click", ()=>{
+  document.getElementById("paymentForm").classList.add("hidden");
+});
+
+// live-format card number into groups of 4
+document.getElementById("payCard").addEventListener("input", (e)=>{
+  let digits = e.target.value.replace(/\D/g, "").slice(0, 16);
+  e.target.value = digits.replace(/(.{4})/g, "$1 ").trim();
+});
+
+// live-format expiry as MM/YY
+document.getElementById("payExpiry").addEventListener("input", (e)=>{
+  let digits = e.target.value.replace(/\D/g, "").slice(0, 4);
+  if(digits.length > 2) digits = digits.slice(0,2) + "/" + digits.slice(2);
+  e.target.value = digits;
+});
+
+document.getElementById("payCvv").addEventListener("input", (e)=>{
+  e.target.value = e.target.value.replace(/\D/g, "").slice(0, 4);
+});
+
+document.getElementById("paySubmit").addEventListener("click", ()=>{
+  const name = document.getElementById("payName").value.trim();
+  const cardDigits = document.getElementById("payCard").value.replace(/\D/g, "");
+  const expiry = document.getElementById("payExpiry").value.trim();
+  const cvv = document.getElementById("payCvv").value.trim();
+  const zip = document.getElementById("payZip").value.trim();
+  const errorEl = document.getElementById("payError");
+
+  const expiryValid = /^(0[1-9]|1[0-2])\/\d{2}$/.test(expiry);
+  let expiryNotExpired = true;
+  if(expiryValid){
+    const [mm, yy] = expiry.split("/").map(Number);
+    const now = new Date();
+    const currentYY = now.getFullYear() % 100;
+    const currentMM = now.getMonth() + 1;
+    expiryNotExpired = yy > currentYY || (yy === currentYY && mm >= currentMM);
+  }
+
+  if(!name){
+    errorEl.textContent = "Please enter the name on the card.";
+  } else if(cardDigits.length !== 16){
+    errorEl.textContent = "Card number must be 16 digits.";
+  } else if(!expiryValid){
+    errorEl.textContent = "Enter expiry as MM/YY.";
+  } else if(!expiryNotExpired){
+    errorEl.textContent = "This card has expired.";
+  } else if(cvv.length < 3){
+    errorEl.textContent = "Enter a valid CVV.";
+  } else if(!zip){
+    errorEl.textContent = "Please enter your billing ZIP / postal code.";
+  } else {
+    errorEl.classList.add("hidden");
+    const car = currentDetailCar;
+    const tax = car.specs.price * 0.07;
+    const total = Math.round(car.specs.price + tax);
+    const orderId = "XM-" + Math.random().toString(36).slice(2, 8).toUpperCase();
+    const cardLast4 = cardDigits.slice(-4);
+
+    // simulate order status: pending -> processing -> paid
+    const submitBtn = document.getElementById("paySubmit");
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Processing…";
+
+    setTimeout(()=>{
+      document.getElementById("rcptId").textContent = orderId;
+      document.getElementById("rcptCar").textContent = `${car.make} ${car.model}`;
+      document.getElementById("rcptCard").textContent = `•••• ${cardLast4}`;
+      document.getElementById("rcptTotal").textContent = formatCurrency(total);
+
+      document.getElementById("paymentForm").classList.add("hidden");
+      document.getElementById("paymentConfirm").classList.remove("hidden");
+
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Pay Now";
+    }, 900);
+    return;
+  }
+  errorEl.classList.remove("hidden");
+});
+
+// ---- currency + dealer view ----
+function refreshPaymentSummary(car){
+  const tax = car.specs.price * 0.07;
+  document.getElementById("paySummaryName").textContent = `${car.make} ${car.model} — deposit`;
+  document.getElementById("paySummaryPrice").textContent = formatCurrency(car.specs.price);
+  document.getElementById("paySummaryTax").textContent = formatCurrency(tax);
+  document.getElementById("paySummaryTotal").textContent = formatCurrency(car.specs.price + tax);
+}
+
+document.getElementById("currencySelect").value = currentCurrency;
+document.getElementById("currencySelect").addEventListener("change", (e)=>{
+  currentCurrency = e.target.value;
+  const q = document.getElementById("searchInput").value.toLowerCase();
+  const filtered = CARS.filter(c => (c.make+" "+c.model+" "+c.cat).toLowerCase().includes(q));
+  render(filtered);
+  if(currentDetailCar && !detailScreen.classList.contains("hidden")){
+    document.getElementById("dPrice").textContent = formatCurrency(currentDetailCar.specs.price);
+    const p = calculateProfit(currentDetailCar);
+    document.getElementById("dProfit").textContent =
+      `Margin: ${formatCurrency(p.profit)} (${p.marginPct.toFixed(1)}%) — cost ${formatCurrency(currentDetailCar.specs.cost)}`;
+    refreshPaymentSummary(currentDetailCar);
+  }
+});
+
+document.getElementById("dealerToggle").addEventListener("click", ()=>{
+  dealerMode = !dealerMode;
+  document.body.classList.toggle("dealer-mode", dealerMode);
+  document.getElementById("dealerBanner").classList.toggle("hidden", !dealerMode);
+});
+
+document.getElementById("searchInput").addEventListener("input", (e)=>{
+  const q = e.target.value.toLowerCase();
+  const filtered = CARS.filter(c =>
+    (c.make+" "+c.model+" "+c.cat).toLowerCase().includes(q)
+  );
+  render(filtered);
+});
+
+renderHero();
+restartHeroTimer();
+render(CARS);
+</script>
+</body>
+</html>
